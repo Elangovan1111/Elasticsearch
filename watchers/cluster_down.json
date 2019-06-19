@@ -1,0 +1,190 @@
+{
+  "trigger": {
+    "schedule": {
+      "interval": "2m"
+    }
+  },
+  "input": {
+    "chain": {
+      "inputs": [
+        {
+          "node_stats": {
+            "search": {
+              "request": {
+                "search_type": "query_then_fetch",
+                "indices": [
+                  ".monitoring-es*"
+                ],
+                "types": [],
+                "body": {
+                  "query": {
+                    "term": {
+                      "type": "cluster_stats"
+                    }
+                  },
+                  "aggs": {
+                    "cluster_all": {
+                      "date_range": {
+                        "field": "timestamp",
+                        "ranges": [
+                          {
+                            "from": "now-{{ctx.metadata.upper_bound_time}}",
+                            "to": "now"
+                          }
+                        ]
+                      },
+                      "aggs": {
+                        "cluster_ids": {
+                          "terms": {
+                            "field": "cluster_uuid",
+                            "size": "{{ctx.metadata.agg_size}}"
+                          }
+                        }
+                      }
+                    },
+                    "cluster_current": {
+                      "date_range": {
+                        "field": "timestamp",
+                        "ranges": [
+                          {
+                            "from": "now-{{ctx.metadata.lower_bound_time}}",
+                            "to": "now"
+                          }
+                        ]
+                      },
+                      "aggs": {
+                        "cluster_ids": {
+                          "terms": {
+                            "field": "cluster_uuid",
+                            "size": "{{ctx.metadata.agg_size}}"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "size": "{{ctx.metadata.hits_size}}"
+                }
+              }
+            }
+          }
+        },
+        {
+          "index_stats": {
+            "search": {
+              "request": {
+                "search_type": "query_then_fetch",
+                "indices": [
+                  "watcher-action-history"
+                ],
+                "types": [],
+                "body": {
+                  "size": 1,
+                  "sort": [
+                    {
+                      "executed_At": {
+                        "order": "desc"
+                      }
+                    }
+                  ],
+                  "query": {
+                    "term": {
+                      "detail.watch_id": {
+                        "value": "{{ctx.watch_id}}"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "condition": {
+    "script": {
+      "source": "List p,q = new ArrayList();List s,r = new ArrayList();if(ctx.payload.node_stats.aggregations.cluster_all.buckets[0].cluster_ids.buckets.size()>ctx.payload.node_stats.aggregations.cluster_current.buckets[0].cluster_ids.buckets.size()){s=ctx.payload.node_stats.aggregations.cluster_all.buckets[0].cluster_ids.buckets.stream().map(e->e.key).filter(a->!ctx.payload.node_stats.aggregations.cluster_current.buckets[0].cluster_ids.buckets.stream().map(e->e.key).collect(Collectors.toList()).contains(a)).collect(Collectors.toList());p=ctx.metadata.cluster_name.stream().filter(b->s.contains(b.key)).collect(Collectors.toList());if (ctx.payload.index_stats.hits.hits.length != 0 ){q=ctx.payload.index_stats.hits.hits[0]._source.detail.payloadTransform.stream().map(e->e.key).collect(Collectors.toList());r=p.stream().filter(t->!q.contains(t)).collect(Collectors.toList());}else{r=[]}if (p.length == q.length && r.length == 0){return false;} else {return true}}else if (ctx.payload.index_stats.hits.hits.length != 0 && ctx.payload.index_stats.hits.hits[0]._source.detail.payloadTransform.length != 0 ){return true}else{return false}",
+      "lang": "painless"
+    }
+  },
+  "actions": {
+    "send_email": {
+      "condition": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.key).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.key)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} if (b.length != 0 ){return true}else {return false}",
+          "lang": "painless"
+        }
+      },
+      "transform": {
+        "script": {
+          "source": "List r = new ArrayList();List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.key).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.key)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} def docs = ['watch_id' : ctx.watch_id, 'payloadTransform' : b];return ['detail' : docs];",
+          "lang": "painless"
+        }
+      },
+      "email": {
+        "profile": "standard",
+        "from": "mail-id@example.com",
+        "to": [
+          "mail-id@example.com"
+        ],
+        "subject": "Watcher_Notification-{{ctx.watch_id}}",
+        "body": {
+          "text": "Following Clusters are down:\n {{#ctx.payload.detail.payloadTransform}}'{{value}}',{{/ctx.payload.detail.payloadTransform}}"
+        }
+      }
+    },
+    "log": {
+      "condition": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.key).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.key)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} if (b.length != 0 ){return true}else {return false}",
+          "lang": "painless"
+        }
+      },
+      "transform": {
+        "script": {
+          "source": "List r = new ArrayList();List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.key).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.key)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} def docs = ['watch_id' : ctx.watch_id, 'payloadTransform' : b];return ['detail' : docs];",
+          "lang": "painless"
+        }
+      },
+      "logging": {
+        "category": "xpack.watcher.actions.logging",
+        "level": "warn",
+        "text": "{{ctx.watch_id}}:The following Cluster(s) are down\n{{#ctx.payload.detail.payloadTransform}}{{value}},\n{{/ctx.payload.detail.payloadTransform}}#cluster"
+      }
+    },
+    "index_payload": {
+      "condition": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData;b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.key)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} if (ctx.payload.detail.indexData.length == 0 ){return true}else if (ctx.payload.detail.payloadData.length != ctx.payload.detail.indexData.length){return true} else if (ctx.payload.detail.payloadData.length == ctx.payload.detail.indexData.length && b.length != 0){return true;} else {return false}",
+          "lang": "painless"
+        }
+      },
+      "transform": {
+        "script": {
+          "source": "def docs = ['watch_id' : ctx.watch_id, 'payloadTransform' : ctx.payload.detail.payloadData];return ['detail' : docs];",
+          "lang": "painless"
+        }
+      },
+      "index": {
+        "index": "watcher-action-history",
+        "doc_type": "doc",
+        "execution_time_field": "executed_At"
+      }
+    }
+  },
+  "metadata": {
+    "condition": {
+      "doc_count": 0
+    },
+    "agg_size": 100,
+    "upper_bound_time": "1d",
+    "hits_size": 0,
+    "lower_bound_time": "2m"
+  },
+  "transform": {
+    "script": {
+      "source": "List p,q = new ArrayList();List s,r = new ArrayList();s=ctx.payload.node_stats.aggregations.cluster_all.buckets[0].cluster_ids.buckets.stream().map(e->e.key).filter(a->!ctx.payload.node_stats.aggregations.cluster_current.buckets[0].cluster_ids.buckets.stream().map(e->e.key).collect(Collectors.toList()).contains(a)).collect(Collectors.toList());p=ctx.metadata.cluster_name.stream().filter(b->s.contains(b.key)).collect(Collectors.toList());if (ctx.payload.index_stats.hits.hits.length != 0 ){q=ctx.payload.index_stats.hits.hits[0]._source.detail.payloadTransform.stream().map(e->e.key).collect(Collectors.toList());r=p.stream().filter(t->!q.contains(t)).collect(Collectors.toList());}else{r=[]} def docs = ['watch_id' : ctx.watch_id, 'payloadData' : p, 'indexData' : q];return ['detail' : docs]",
+      "lang": "painless"
+    }
+  }
+}
