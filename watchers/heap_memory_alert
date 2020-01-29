@@ -1,0 +1,184 @@
+PUT /_watcher/watch/JVM_heap_memory
+{
+  "trigger": {
+    "schedule": {
+      "interval": "1h"
+    }
+  },
+  "input": {
+    "chain": {
+      "inputs": [
+        {
+          "node_stats": {
+            "search": {
+              "request": {
+                "search_type": "query_then_fetch",
+                "indices": [
+                  ".monitoring-es*"
+                ],
+                "body": {
+                  "size": "{{ctx.metadata.hits_size}}",
+                  "sort": [
+                    {
+                      "timestamp": {
+                        "order": "desc"
+                      }
+                    }
+                  ],
+                  "query": {
+                    "bool": {
+                      "filter": {
+                        "bool": {
+                          "must": [
+                            {
+                              "range": {
+                                "timestamp": {
+                                  "gte": "now-{{ctx.metadata.lower_bound_time}}"
+                                }
+                              }
+                            },
+                            {
+                              "term": {
+                                "type": "node_stats"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "aggs": {
+                    "nodes": {
+                      "terms": {
+                        "field": "source_node.name",
+                        "size": "{{ctx.metadata.agg_size}}"
+                      },
+                      "aggs": {
+                        "jvm_memory_use": {
+                          "max": {
+                            "field": "node_stats.jvm.mem.heap_used_percent"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "index_stats": {
+            "search": {
+              "request": {
+                "search_type": "query_then_fetch",
+                "indices": [
+                  "watcher-action-history"
+                ],
+                "body": {
+                  "size": 1,
+                  "sort": [
+                    {
+                      "executed_At": {
+                        "order": "desc"
+                      }
+                    }
+                  ],
+                  "query": {
+                    "term": {
+                      "detail.watch_id": {
+                        "value": "{{ctx.watch_id}}"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "condition": {
+    "script": {
+      "source": "List p,q = new ArrayList();List r = new ArrayList();if(ctx.payload.node_stats.aggregations.nodes.buckets.stream().anyMatch(it->it.jvm_memory_use.value>ctx.metadata.jvm_threshold)){p=ctx.payload.node_stats.aggregations.nodes.buckets.stream().filter(it->it.jvm_memory_use.value>ctx.metadata.jvm_threshold).collect(Collectors.toList());if (ctx.payload.index_stats.hits.hits.length != 0 ){q=ctx.payload.index_stats.hits.hits[0]._source.detail.payloadTransform;r=p.stream().filter(t->!q.stream().map(e->e.node_name).collect(Collectors.toList()).contains(t.key)).collect(Collectors.toList());}else{r=[]}if(p.length == q.length && r.length == 0){return false}else{return true}} else if (ctx.payload.index_stats.hits.hits.length != 0 && ctx.payload.index_stats.hits.hits[0]._source.detail.payloadTransform.length != 0 ){return true}else{return false}",
+      "lang": "painless"
+    }
+  },
+  "actions": {
+    "send_email": {
+      "condition": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.node_name).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.node_name)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} if (b.length != 0 ){return true}else {return false}",
+          "lang": "painless"
+        }
+      },
+      "transform": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.node_name).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.node_name)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} def docs = ['watch_id' : ctx.watch_id, 'payloadTransform' : b];return ['detail' : docs];",
+          "lang": "painless"
+        }
+      },
+      "email": {
+        "profile": "standard",
+        "from": "mail-to@example.com",
+        "to": [
+          "mail-to@example.com"
+        ],
+        "subject": "Watcher_Notification-{{ctx.watch_id}}",
+        "body": {
+          "text": "JVM Heap Memory usage have spiked on following nodes:\n {{#ctx.payload.detail.payloadTransform}}For node {{node_name}}: spiked to {{jvm_usage}},\n{{/ctx.payload.detail.payloadTransform}}"
+        }
+      }
+    },
+    "log": {
+      "condition": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.node_name).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.node_name)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} if (b.length != 0 ){return true}else {return false}",
+          "lang": "painless"
+        }
+      },
+      "transform": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.node_name).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.node_name)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} def docs = ['watch_id' : ctx.watch_id, 'payloadTransform' : b];return ['detail' : docs];",
+          "lang": "painless"
+        }
+      },
+      "logging": {
+        "category": "xpack.watcher.actions.logging",
+        "level": "warn",
+        "text": "{{ctx.watch_id}}#MON.N.ESAAS.ELS00100#JVM Heap Memory usage have spiked in one or more nodes#{{#ctx.payload.detail.payloadTransform}}{{node_name}},{{/ctx.payload.detail.payloadTransform}}#node"
+      }
+    },
+    "index_payload": {
+      "condition": {
+        "script": {
+          "source": "List a,b = new ArrayList();if (ctx.payload.detail.indexData.length != 0 ){a=ctx.payload.detail.indexData.stream().map(e->e.node_name).collect(Collectors.toList());b=ctx.payload.detail.payloadData.stream().filter(t->!a.contains(t.node_name)).collect(Collectors.toList());}else{b=ctx.payload.detail.payloadData;} if (ctx.payload.detail.indexData.length == 0 ){return true}else if (ctx.payload.detail.payloadData.length != ctx.payload.detail.indexData.length){return true} else if (ctx.payload.detail.payloadData.length == ctx.payload.detail.indexData.length && b.length != 0){return true;} else {return false}",
+          "lang": "painless"
+        }
+      },
+      "transform": {
+        "script": {
+          "source": "def docs = ['watch_id' : ctx.watch_id, 'payloadTransform' : ctx.payload.detail.payloadData];return ['detail' : docs];",
+          "lang": "painless"
+        }
+      },
+      "index": {
+        "index": "watcher-action-history",
+        "execution_time_field": "executed_At"
+      }
+    }
+  },
+  "metadata": {
+    "jvm_threshold": 90,
+    "agg_size": 100,
+    "hits_size": 0,
+    "lower_bound_time": "3m"
+  },
+  "transform": {
+    "script": {
+      "source": "List p,q = new ArrayList();List r = new ArrayList();p=ctx.payload.node_stats.aggregations.nodes.buckets.stream().filter(it->it.jvm_memory_use.value>ctx.metadata.jvm_threshold).map(it -> ['node_name':it.key, 'jvm_usage':it.jvm_memory_use.value]).collect(Collectors.toList());if (ctx.payload.index_stats.hits.hits.length != 0 ){q=ctx.payload.index_stats.hits.hits[0]._source.detail.payloadTransform;r=p.stream().filter(t->!q.stream().map(e->e.node_name).collect(Collectors.toList()).contains(t.key)).collect(Collectors.toList());}else{r=[]} def docs = ['watch_id' : ctx.watch_id, 'payloadData' : r, 'indexData' : q];return ['detail' : docs];",
+      "lang": "painless"
+    }
+  }
+}
